@@ -13,7 +13,7 @@ from datasets import Dataset
 
 MODEL_NAME = "ProsusAI/finbert"
 INPUT_CSV = "data/finbert_training_data.csv"
-OUTPUT_DIR = "./model/finbert_finetuned_local"
+OUTPUT_DIR = "./model/"
 MAX_LEN = 512
 BATCH_SIZE = 8
 EPOCHS = 3
