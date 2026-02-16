@@ -28,7 +28,6 @@ def load_models():
     # B. Load FinBERT (Sentiment)
     local_path = "model/" # Looks for model.safetensors and config.json here
     
-    st.write("🔄 Loading Sentiment Model...")
     
     try:
         # Try loading local files first
@@ -39,14 +38,12 @@ def load_models():
         model = AutoModelForSequenceClassification.from_pretrained(local_path)
         
         finbert = pipeline("text-classification", model=model, tokenizer=tokenizer)
-        st.toast("✅ Using Custom Local Model!", icon="📂")
         print("Loaded local model from Model/")
         
     except Exception as e:
         logger.warning(f"⚠️ Local model failed: {e}. Falling back to standard FinBERT.")
         print(f"Fallback triggered: {e}")
         finbert = pipeline("text-classification", model="ProsusAI/finbert")
-        st.toast("⚠️ Using Standard Online Model", icon="☁️")
 
     return ner, finbert
 
