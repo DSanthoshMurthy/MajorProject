@@ -15,7 +15,6 @@ import logging
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="AI Stock Model Predicter", page_icon="📈", layout="centered")
 
-
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -27,7 +26,7 @@ def load_models():
     ner = pipeline("ner", model="dbmdz/bert-large-cased-finetuned-conll03-english", aggregation_strategy="simple")
 
     # B. Load FinBERT (Sentiment)
-    local_path = "data/" # Looks for model.safetensors and config.json here
+    local_path = "model/" # Looks for model.safetensors and config.json here
     
     st.write("🔄 Loading Sentiment Model...")
     
@@ -41,7 +40,7 @@ def load_models():
         
         finbert = pipeline("text-classification", model=model, tokenizer=tokenizer)
         st.toast("✅ Using Custom Local Model!", icon="📂")
-        print("Loaded local model from data/")
+        print("Loaded local model from Model/")
         
     except Exception as e:
         logger.warning(f"⚠️ Local model failed: {e}. Falling back to standard FinBERT.")
