@@ -168,8 +168,8 @@ def train_and_predict(ticker):
     return curr_price, pred_price
 
 # --- 5. UI LAYOUT ---
-st.title("🤖 AI Stock Model Predicter (Smart Mode)")
-st.markdown("Paste a news headline. Uses **Local Custom Model** if available.")
+st.title("🤖 AI Stock Model Predicter")
+st.markdown("Paste a news headline")
 
 with st.form("input_form"):
     news_text = st.text_area("News Headline:", height=100)
