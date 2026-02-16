@@ -4,68 +4,81 @@ import pandas as pd
 import numpy as np
 import torch
 import torch.nn as nn
-from transformers import pipeline
+from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
 from sklearn.preprocessing import MinMaxScaler
 from thefuzz import process
 import requests
 import io
-
+import os
+import logging
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="AI Stock Oracle", page_icon="📈", layout="centered")
+st.set_page_config(page_title="AI Stock Model Predicter", page_icon="📈", layout="centered")
 
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# --- 1. LOAD AI MODELS (LOCAL -> FALLBACK) ---
+@st.cache_resource
+def load_models():
+    # A. Load NER (Company Detection)
+    # We keep this online because the local model is just for sentiment
+    ner = pipeline("ner", model="dbmdz/bert-large-cased-finetuned-conll03-english", aggregation_strategy="simple")
+
+    # B. Load FinBERT (Sentiment)
+    local_path = "data/" # Looks for model.safetensors and config.json here
+    
+    st.write("🔄 Loading Sentiment Model...")
+    
+    try:
+        # Try loading local files first
+        if not os.path.exists(local_path):
+            raise FileNotFoundError(f"Directory {local_path} not found.")
+            
+        tokenizer = AutoTokenizer.from_pretrained(local_path)
+        model = AutoModelForSequenceClassification.from_pretrained(local_path)
+        
+        finbert = pipeline("text-classification", model=model, tokenizer=tokenizer)
+        st.toast("✅ Using Custom Local Model!", icon="📂")
+        print("Loaded local model from data/")
+        
+    except Exception as e:
+        logger.warning(f"⚠️ Local model failed: {e}. Falling back to standard FinBERT.")
+        print(f"Fallback triggered: {e}")
+        finbert = pipeline("text-classification", model="ProsusAI/finbert")
+        st.toast("⚠️ Using Standard Online Model", icon="☁️")
+
+    return ner, finbert
+
+ner_pipeline, finbert_pipeline = load_models()
+
+# --- 2. HELPER FUNCTIONS (SEEDING) ---
 def set_seed(seed=42):
     torch.manual_seed(seed)
     np.random.seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-# --- 1. LOAD AI MODELS (CACHED) ---
-@st.cache_resource
-def load_models():
-    # Load NER (Company Detection)
-    ner = pipeline("ner", model="dbmdz/bert-large-cased-finetuned-conll03-english", aggregation_strategy="simple")
-    # Load FinBERT (Sentiment)
-    finbert = pipeline("text-classification", model="ProsusAI/finbert")
-    return ner, finbert
-
-ner_pipeline, finbert_pipeline = load_models()
-
-# --- 2. DYNAMIC TICKER MAPPING (THE MAGIC PART) ---
+# --- 3. DYNAMIC TICKER MAPPING ---
 @st.cache_data
 def load_ticker_map():
-    """
-    Downloads the official list of all NSE stocks dynamically.
-    """
     url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
-    
     try:
-        # NSE blocks python requests sometimes, so we pretend to be a browser
         headers = {"User-Agent": "Mozilla/5.0"}
         response = requests.get(url, headers=headers)
-        
         if response.status_code == 200:
             df = pd.read_csv(io.BytesIO(response.content))
-            
-            # Create a clean dictionary: {'RELIANCE INDUSTRIES LTD': 'RELIANCE.NS'}
             ticker_map = {}
             for _, row in df.iterrows():
-                # Store full name
                 company_name = str(row['NAME OF COMPANY']).strip()
                 symbol = f"{row['SYMBOL']}.NS"
                 ticker_map[company_name] = symbol
-                
-                # OPTIONAL: Also store the short symbol as a key for better matching
-                # e.g., allow matching "TATASTEEL" directly
                 ticker_map[str(row['SYMBOL'])] = symbol
-                
             return ticker_map, list(ticker_map.keys())
         else:
             raise Exception("NSE Download failed")
-            
     except Exception as e:
-        st.warning(f"⚠️ Could not download live ticker list ({e}). Using offline fallback.")
-        # Fallback list if internet fails
         fallback_map = {
             "RELIANCE INDUSTRIES": "RELIANCE.NS", "TATA MOTORS": "TATAMOTORS.NS",
             "JINDAL STEEL & POWER": "JINDALSTEL.NS", "JSW STEEL": "JSWSTEEL.NS",
@@ -73,11 +86,9 @@ def load_ticker_map():
         }
         return fallback_map, list(fallback_map.keys())
 
-# Load the map once when app starts
 TICKER_MAP, COMPANY_NAMES = load_ticker_map()
 
-# --- 3. HELPER CLASSES ---
-
+# --- 4. MODEL CLASSES ---
 class LSTMModel(nn.Module):
     def __init__(self, input_dim=1, hidden_dim=32, output_dim=1, num_layers=2):
         super(LSTMModel, self).__init__()
@@ -92,17 +103,12 @@ class LSTMModel(nn.Module):
         return out
 
 def get_ticker_from_text(text):
-    # 1. Use BERT NER to find Organization names
     entities = ner_pipeline(text)
     orgs = [e['word'] for e in entities if e['entity_group'] == 'ORG']
     
-    # 2. If BERT fails, check if any known company name exists in text
     if not orgs:
-        # Simple scan (slower but effective backup)
-        # We search for the *Symbol* in text because full names are rarely typed perfectly
         words = text.split()
         for word in words:
-            # Check if a word roughly matches a known symbol
             match, score = process.extractOne(word, COMPANY_NAMES)
             if score > 90:
                 orgs = [match]
@@ -111,17 +117,14 @@ def get_ticker_from_text(text):
     if not orgs:
         return None, "No Company Found"
     
-    # 3. Fuzzy Match the found Entity against the Official List
-    # "Jindal Steels" -> Matches "JINDAL STEEL & POWER LTD"
     best_match, score = process.extractOne(orgs[0], COMPANY_NAMES)
-    
-    if score > 60: # Threshold
+    if score > 60:
         return TICKER_MAP[best_match], best_match
     return None, f"Unsure ({orgs[0]})"
 
 def train_and_predict(ticker):
-    # Fetch Data
     set_seed(42)
+    
     df = yf.download(ticker, period="2y", progress=False)
     if df.empty: return None, None
     
@@ -146,7 +149,7 @@ def train_and_predict(ticker):
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
     
-    epochs = 15
+    epochs = 20
     for _ in range(epochs):
         optimizer.zero_grad()
         output = model(X_train)
@@ -165,9 +168,9 @@ def train_and_predict(ticker):
     
     return curr_price, pred_price
 
-# --- 4. UI LAYOUT ---
-st.title("🤖 AI Stock Oracle (Live NSE Data)")
-st.markdown("Paste a news headline. I will search the **Official NSE List** to find the company.")
+# --- 5. UI LAYOUT ---
+st.title("🤖 AI Stock Model Predicter (Smart Mode)")
+st.markdown("Paste a news headline. Uses **Local Custom Model** if available.")
 
 with st.form("input_form"):
     news_text = st.text_area("News Headline:", height=100)
@@ -184,9 +187,11 @@ if submitted and news_text:
         st.success(f"**Identified:** {name} ({ticker})")
             
         with st.spinner("🧠 Analyzing Sentiment..."):
+            # Using the loaded pipeline (either local or fallback)
             sent_result = finbert_pipeline(news_text)[0]
             label = sent_result['label']
             score = sent_result['score']
+            
             if label == "positive": sent_val = score
             elif label == "negative": sent_val = -score
             else: sent_val = 0
@@ -194,24 +199,16 @@ if submitted and news_text:
         with st.spinner(f"📉 Training AI on {ticker}..."):
             curr_price, pred_price = train_and_predict(ticker)
             
-        # [Past this into the matching section of your app.py]
-
-        # ... (Technical Prediction code above remains same)
-        
         if curr_price:
             tech_change = ((pred_price - curr_price) / curr_price) * 100
             
-            # 4. DASHBOARD
             col1, col2 = st.columns(2)
-            
             with col1:
-                # FIX: Handle NEUTRAL explicitly
                 if label == "positive":
                     st.metric("News Sentiment", f"{label.upper()}", f"{score:.2f}", delta_color="normal")
                 elif label == "negative":
-                    st.metric("News Sentiment", f"{label.upper()}", f"-{score:.2f}", delta_color="inverse") # Red
+                    st.metric("News Sentiment", f"{label.upper()}", f"-{score:.2f}", delta_color="inverse")
                 else:
-                    # NEUTRAL -> Gray (Standard UI)
                     st.metric("News Sentiment", f"{label.upper()}", f"{score:.2f}", delta_color="off")
             
             with col2:
@@ -219,7 +216,6 @@ if submitted and news_text:
                 
             st.divider()
             
-            # Verdict Logic
             final_score = tech_change + (sent_val * 2.0)
             
             if tech_change < 0 and sent_val > 0.5:
@@ -235,11 +231,9 @@ if submitted and news_text:
                 verdict = "🔻 STRONG SELL"
                 color = "red"
             else:
-                # NEUTRAL / UNCERTAIN -> YELLOW
                 verdict = "⚖️ HOLD / UNCERTAIN"
-                color = "#FFC300" # Bright Amber/Yellow
+                color = "#FFC300" 
                 
             st.markdown(f"<h3 style='text-align: center; color: {color};'>{verdict}</h3>", unsafe_allow_html=True)
-            
         else:
             st.error("Could not fetch market data.")

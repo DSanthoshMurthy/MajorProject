@@ -62,13 +62,14 @@ print(f"Training on: {device}")
 
 model = AutoModelForSequenceClassification.from_pretrained(
     MODEL_NAME, 
-    num_labels=len(label_encoder.classes_)
+    num_labels=len(label_encoder.classes_),
+    ignore_mismatched_sizes=True  # <--- ADD THIS LINE
 ).to(device)
 
 # --- 4. Training ---
 training_args = TrainingArguments(
     output_dir=OUTPUT_DIR,
-    evaluation_strategy="epoch",
+    eval_strategy="epoch", 
     save_strategy="epoch",
     learning_rate=2e-5,
     per_device_train_batch_size=BATCH_SIZE,
